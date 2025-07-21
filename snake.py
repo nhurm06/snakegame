@@ -1,174 +1,342 @@
 from tkinter import *
+from abc import abstractmethod
+from collections import namedtuple
 import random
+from itertools import count
+from typing import Protocol, Tuple
 
-SPEED = 100
-SNAKE_COLOR = "#00FF00"
-FOOD_COLOR = "#FF0000"
+BASE_SPEED = 100
+SPEED_INCREMENT = 5
 BACKGROUND_COLOR = "#000000"
-HEIGHT = 700
-WIDTH = 700
-CELL_SIZE =50
+CELL_SIZE =25
+MAX_FOOD = 2
+
+class Fruit(Protocol):
+    """All Fruit must have reward and spawn"""
+    def reward(self, game: "Game") -> int: ...
+    def spawn(self) -> int: ...
+
+class Player:
+    """Handles a player's snake and controls."""
+    #Passing in a player id/Player number is easier, but wanted to see if it can be automated
+    playerIdCounter = count().__next__
+
+    def __init__(self, canvas: Canvas, color: str) -> None:
+        """Initialize player with a canvas and color."""
+        self.canvas = canvas
+        self.color = color
+        self.playerId = Player.playerIdCounter()
+
+    def change_direction(self, new_direction: str) -> None:
+        """Change the player's direction if not reversing."""
+        opposite_directions = {"up": "down", "down": "up", "left": "right", "right": "left"}
+        if new_direction != opposite_directions.get(self.direction):
+            self.direction = new_direction
 
 
-class Snake(object):
+    def random_coord(self, game: "Game") -> tuple:
+        #TODO Only Randomizing X due to needing to account for Snake directions other than down
+        x = random.randint(0, (game.width // CELL_SIZE) - 1) * CELL_SIZE
+        return x, 0
 
-    def __init__(self, canvas):
+    def change_score(self, reward: int) -> int:
+        self.score = self.score + reward
+        return self.score
+
+
+    def spawn_snake(self, start_x: int, start_y: int, direction: str) -> "Snake":
+        return Snake(self.canvas, self.color, start_x, start_y, direction)
+
+    def start_player(self, game: "Game") -> None:
+        """Initial Snake and direction"""
+        start_x, start_y = self.random_coord(game)
+
+        self.direction = "down" #Hardcoded due to possible issues spawing near a wall
+        self.snake = self.spawn_snake(start_x, start_y, self.direction)
+
+        self.score = 0
+
+
+
+class Snake:
+
+    def __init__(self, canvas: Canvas, color: str, start_x: int = 0, start_y: int = 0, direction: str = "down") -> None:
+        self.canvas = canvas
         self.body_size = 3
-        self.coordinates = []
-        self.squares = []
+        self.color = color
+        self.food_consumed = 0
+        self.speed = BASE_SPEED
+        self.coordinates = [(start_x, start_y) for i in range(self.body_size)]
+        self.squares = [self.create_square(x, y) for x, y in self.coordinates]
 
-        #change range to factor in body size rather than hard coding
-        for i in range(0, self.body_size):
-            self.coordinates.append([0, 0])
+    def create_square(self, x: int, y: int) -> int:
+        return self.canvas.create_rectangle(
+            x, y, x + CELL_SIZE, y + CELL_SIZE, fill=self.color, tag="snake"
+        )
 
-        for x, y in self.coordinates:
-            square = canvas.create_rectangle(x, y, x + CELL_SIZE, y + CELL_SIZE, fill=SNAKE_COLOR, tag="snake")
-            self.squares.append(square)
+    def move(self, direction: str) -> tuple:
+        x, y = self.coordinates[0]
+
+        if direction == "up":
+            y -= CELL_SIZE
+        elif direction == "down":
+            y += CELL_SIZE
+        elif direction == "left":
+            x -= CELL_SIZE
+        elif direction == "right":
+            x += CELL_SIZE
+
+        self.coordinates.insert(0, (x, y))
+        self.squares.insert(0, self.create_square(x, y))
+
+        return (x, y)
+
+    def grow(self) -> None:
+        """Snake eats, increases size and speed the."""
+        self.body_size += 1
+        self.food_consumed += 1
+        self.speed = self.speed - (self.food_consumed * SPEED_INCREMENT) #counter intuitive. Lower the self.speed the quicker the refesh
+
+    def cleanup(self) -> None:
+        """Remove the last segment of the snake when moving forward."""
+        if len(self.coordinates) > self.body_size:
+            self.canvas.delete(self.squares[-1])
+            del self.coordinates[-1]
+            del self.squares[-1]
 
 
-class Food(object):
 
-    def __init__(self, canvas):
+class Food(Fruit):
 
-        x = random.randint(0, (WIDTH / CELL_SIZE)-1) * CELL_SIZE
-        y = random.randint(0, (HEIGHT / CELL_SIZE) - 1) * CELL_SIZE
 
-        self.coordinates = [x, y]
+    spawn_rate = 1 #needed to set up a weighted query
 
-        canvas.create_oval(x, y, x + CELL_SIZE, y + CELL_SIZE, fill=FOOD_COLOR, tag="food")
+    def __init__(self, canvas: Canvas, color: str, width: int, height: int):
+        self.canvas = canvas
+        self.color = color
+        self.width = width
+        self.height = height
+        self.coordinates = self.random_coord()
+        self.oval_id = self.spawn()
+
+    def random_coord(self) -> tuple:
+        """Generate a random coordinate within game boundaries."""
+        x = random.randint(0, (self.width // CELL_SIZE) - 1) * CELL_SIZE
+        y = random.randint(0, (self.height // CELL_SIZE) - 1) * CELL_SIZE
+        return x, y
+
+    def spawn(self):
+        x, y = self.coordinates
+        return self.canvas.create_oval(x, y, x + CELL_SIZE, y + CELL_SIZE, fill=self.color, tag="food")
+
+
+    def reward(self, game: "Game"):
+        """Reward for eating. Force Subclasses to implement"""
+        pass
+    @classmethod
+    def weighted_query_foods(cls) -> list:
+        """Return a list with all foods multiplied by their spawn rate"""
+        return [food for food in cls.__subclasses__() for i in range(food.spawn_rate)]
+
+
+    @staticmethod
+    def spawn_food(canvas: Canvas, width: int, height: int) -> "Fruit":
+        """Create a food from weighted list of foods"""
+        foods = Food.weighted_query_foods()
+        return random.choice(foods)(canvas, width, height)
+
+
+class Apple(Food):
+    spawn_rate = 6
+
+    def __init__(self, canvas: Canvas, width: int, height: int):
+        super().__init__(canvas, "#FF0000", width, height)  # Red color for Apple
+
+    def reward(self, game: "Game") -> int:
+        return 1
+
+
+class Blueberry(Food):
+    spawn_rate = 3
+
+    def __init__(self, canvas: Canvas, width: int, height: int):
+        super().__init__(canvas, "#0000FF", width, height)  # Blue color for Blueberry
+
+    def reward(self, game: "Game") -> int:
+        return 2
+
+
+class Cherry(Food):
+    spawn_rate = 1
+
+    def __init__(self, canvas: Canvas, width: int, height: int):
+        super().__init__(canvas, "#FF00FF", width, height)  # Purple color for Cherry
+
+    def reward(self, game: "Game") -> int:
+        """Cherries also spawn apples."""
+        self.spawn_apples(game)
+        return 3
+
+    def spawn_apples(self, game: "Game") -> None:
+        for i in range(3):
+            apple = Apple(game.canvas, game.width, game.height)
+            game.foods.append(apple)
+
+
+
 
 ##add a new class to manage the game rather than functions
-class Game(object):
-    '''
-    Snake Game logic
-    '''
+class Game:
+
 
     def __init__(self):
-        '''
-        initalize the window and game
-        Returns:
-
-        '''
+        self.game_running = False
         self.window = Tk()
-        self.window.title("Snake game")
-        self.window.resizable(False, False)
+        self.window.title("Snake Game")
+        self.window.geometry(f"700x700")
+        self.window.bind("<Configure>", self.on_resize) #needed to ensure game area is updated
+        #Should window be resized when game is active?
 
-        #set score and directior to be members of the class rather than global. New game new score/direction
-        self.score = 0
-        self.direction = 'down'
+        self.canvas = Canvas(self.window, bg=BACKGROUND_COLOR)
+        self.canvas.pack(fill=BOTH, expand=True)
+        self.foods = []
+        self.players = [Player(self.canvas,"#00FF00"),Player(self.canvas,"#FFFF00")]  # Add more players as needed
+        self.players = [Player(self.canvas, "#0FFFF0")]
 
-        self.label = Label(self.window, text="Score:{}".format(self.score), font=('consolas', 40))
-        self.label.pack()
+        self.score_frame =LabelFrame(self.window, text="SCORE", font=('consolas',20))
+        #TODO Edge case where food is spawned behind score label
 
-        self.canvas = Canvas(self.window, bg=BACKGROUND_COLOR, height=HEIGHT, width=WIDTH)
-        self.canvas.pack()
-
-        self.window.update()
-
-        #TODO window setup could be moved to a new function
-        window_width = self.window.winfo_width()
-        window_height = self.window.winfo_height()
-        screen_width = self.window.winfo_screenwidth()
-        screen_height = self.window.winfo_screenheight()
-
-        x = int((screen_width / 2) - (window_width / 2))
-        y = int((screen_height / 2) - (window_height / 2))
-
-        self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
-
-        self.window.bind('<Left>', lambda event: self.change_direction('left'))
-        self.window.bind('<Right>', lambda event: self.change_direction('right'))
-        self.window.bind('<Up>', lambda event: self.change_direction('up'))
-        self.window.bind('<Down>', lambda event: self.change_direction('down'))
-
-        self.snake = Snake(self.canvas)
-        self.food = Food(self.canvas)
-
-        self.next_turn()
-
+        self.score_frame.pack(side=TOP)
+        self.score_labels = {}
+        for player in self.players:
+            player_frame = Frame(self.score_frame)  # Container for each player's score
+            player_frame.pack(side=LEFT, padx=10)
+            color_canvas = Canvas(player_frame, width=20, height=20, bg=player.color)
+            color_canvas.pack(side=LEFT, padx=5)
+            label = Label(player_frame, text=f"Player {player.playerId + 1}: 0", font=("consolas", 14))
+            label.pack(side=LEFT, padx=10)
+            self.score_labels[player.playerId] = label
+        self.bind_keys()
         self.window.mainloop()
 
-    def next_turn(self):
 
-        x, y = self.snake.coordinates[0]
+    def update_score(self, player_id: int , new_score: int) -> None:
+        """Update the score label dynamically."""
+        self.score_labels[player_id].config(text=f"Player {player_id + 1}: {new_score}")
 
-        if self.direction == "up":
-            y -= 50
-        elif self.direction == "down":
-            y += 50
-        elif self.direction == "left":
-            x -= 50
-        elif self.direction == "right":
-            x += 50
+    def on_resize(self, event):
+        """Adjust game width and height if window is changed"""
+        self.width = self.canvas.winfo_width()
+        self.height = self.canvas.winfo_height()
 
-        self.snake.coordinates.insert(0, (x, y))
 
-        square = self.canvas.create_rectangle(x, y, x + CELL_SIZE, y + CELL_SIZE, fill=SNAKE_COLOR)
+        self.canvas.delete("start")
+        self.canvas.create_text(
+            self.width // 2, self.height // 2, font=('consolas', 40),
+            text="GAME START", fill="white", tag="start"
+        )
+        self.canvas.create_text(
+            self.width // 2, (self.height // 2) + 50, font=('consolas', 20),
+            text="Press SPACE", fill="white", tag="start"
+        )
 
-        self.snake.squares.insert(0, square)
+    def game_start(self) -> None:
+        self.game_running = False
+        self.unbind_menu()
+        self.canvas.delete("start")
+        self.canvas.delete("gameover")
+        self.foods.clear()
+        self.manage_food()
+        self.game_running = True
+        for player in self.players:
+            player.start_player(self)
+            self.update_score(player.playerId,0)
 
-        if x == self.food.coordinates[0] and y == self.food.coordinates[1]:
+            self.window.after(BASE_SPEED, self.next_turn, player)
 
-            self.score += 1
+    def bind_keys(self) -> None:
+        """Bind movement keys to players."""
+        #TODO We could make this on the player
+        self.window.bind('<Left>', lambda event: self.players[0].change_direction("left"))
+        self.window.bind('<Right>', lambda event: self.players[0].change_direction("right"))
+        self.window.bind('<Up>', lambda event: self.players[0].change_direction("up"))
+        self.window.bind('<Down>', lambda event: self.players[0].change_direction("down"))
+        self.window.bind('<a>', lambda event: self.players[1].change_direction("left"))
+        self.window.bind('<d>', lambda event: self.players[1].change_direction("right"))
+        self.window.bind('<w>', lambda event: self.players[1].change_direction("up"))
+        self.window.bind('<s>', lambda event: self.players[1].change_direction("down"))
+        self.window.bind('<space>', lambda event: self.game_start())
+    def unbind_menu(self) -> None:
+        #TODO there's undoubtedly a better way to do is.
+        #temp unbinding of a key during gameplay
+        self.window.unbind("<space>")
 
-            self.label.config(text="Score:{}".format(self.score))
+    def manage_food(self) -> None:
+        """Ensure both players have access to food"""
+        while len(self.foods) < MAX_FOOD:
+            new_food = Food.spawn_food(self.canvas, self.width, self.height)
+            self.foods.append(new_food)
+    def next_turn(self, player: Player) -> None:
+        if not self.game_running: #Don't move if game isn't running
+            return
 
-            self.canvas.delete("food")
+        x, y = player.snake.move(player.direction)
 
-            self.food = Food(self.canvas)
+        #TODO Can simplify this.
+        #If player collides with other player snake, stop movement, but dont end game
+        for p in self.players:
+            if player.playerId != p.playerId:
 
-        else:
+                if (x,y) in p.snake.coordinates:
+                    self.canvas.delete(player.snake.squares[0])
+                    player.snake.squares.pop(0)
+                    player.snake.coordinates.pop(0)
 
-            del self.snake.coordinates[-1]
-
-            self.canvas.delete(self.snake.squares[-1])
-
-            del self.snake.squares[-1]
-
-        if self.check_collisions():
+        if self.check_collision(player.snake):
             self.game_over()
+            return
 
-        else:
-            self.window.after(SPEED, self.next_turn)
+        for food in self.foods[:]:
+            if (x, y) == (food.coordinates):
+                player.snake.grow()
+                self.update_score(player.playerId, player.change_score(food.reward(self)))
 
+                self.foods.remove(food)
+                self.canvas.delete(food.oval_id)
 
-    def change_direction(self,new_direction):
-        #changing complicated direction change. Snake cannot turn 180
-        if new_direction == 'left':
-            if self.direction != 'right':
-                self.direction = new_direction
-        elif new_direction == 'right':
-            if self.direction != 'left':
-                self.direction = new_direction
-        elif new_direction == 'up':
-            if self.direction != 'down':
-                self.direction = new_direction
-        elif new_direction == 'down':
-            if self.direction != 'up':
-                self.direction = new_direction
+                self.manage_food()
+                break
+        player.snake.cleanup()
+        self.window.after(player.snake.speed, self.next_turn, player)
 
+    def check_collision(self, snake: Snake) -> bool:
+        """Check if the snake collides with the walls or itself."""
+        x, y = snake.coordinates[0]
 
-    def check_collisions(self):
-
-        x, y = self.snake.coordinates[0]
-        #make window size a constant
-        if x < 0 or x >= HEIGHT:
-            return True
-        elif y < 0 or y >= WIDTH:
+        # Wall collision
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return True
 
-        for body_part in self.snake.coordinates[1:]:
-            if x == body_part[0] and y == body_part[1]:
+        # Self-collision
+        for segment in snake.coordinates[1:]:
+            if x == segment[0] and y == segment[1]:
                 return True
 
         return False
 
-
-    def game_over(self):
-
+    def game_over(self) -> None:
+        """End the game and display a Game Over message."""
+        self.game_running = False
         self.canvas.delete(ALL)
-        self.canvas.create_text(self.canvas.winfo_width()/2, self.canvas.winfo_height()/2,
-                           font=('consolas',70), text="GAME OVER", fill="red", tag="gameover")
+        self.canvas.create_text(
+            self.width // 2, self.height // 2, font=('consolas', 40),
+            text="GAME OVER", fill="red", tag="gameover"
+        )
+        self.canvas.create_text(
+            self.width // 2, self.height // 2 + 50, font=('consolas', 40),
+            text="Space to Retry", fill="white", tag="gameover"
+        )
+        self.window.bind('<space>', lambda event: self.game_start())
 
 
 if __name__ == "__main__":
